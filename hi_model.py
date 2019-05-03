@@ -8,7 +8,7 @@ import math
 from torch.nn import init
 from torch.nn.utils import rnn
 
-class HISPModel(nn.Module):
+class HIModel(nn.Module):
     def __init__(self, config, word_mat, char_mat):
         super().__init__()
         self.config = config
@@ -22,11 +22,6 @@ class HISPModel(nn.Module):
         self.char_cnn = nn.Conv1d(config.char_dim, config.char_hidden, 5)
         self.char_hidden = config.char_hidden
         self.hidden = config.hidden
-
-        self.encoder_lev1 = EncoderRNN(config.char_hidden+self.word_dim, config.hidden, 1, False, False, 1-config.keep_prob, False)
-        self.word_attn = WordAttention(config.hidden, config.hidden)
-        self.encoder_lev2 = EncoderRNN(config.hidden, config.hidden, 1, False, False, 1-config.keep_prob, False)
-        self.sent_attn = SentenceAttention(config.hidden, config.hidden)
 
         self.rnn = EncoderRNN(config.char_hidden+self.word_dim, config.hidden, 1, True, True, 1-config.keep_prob, False)
         self.rnn_1 = EncoderRNN(config.hidden, config.hidden, 1, True, True, 1-config.keep_prob, False)
@@ -95,30 +90,11 @@ class HISPModel(nn.Module):
         ques_mask_splits = list(torch.chunk(ques_mask, 10, dim=1))
 
         context_splits = list(torch.chunk(context_output, 10, dim=1))
-        length_of_chunk = context_mask_splits[0].size(1)
-        quotients = context_lens.int()/length_of_chunk
-        remainders = context_lens.int()%length_of_chunk
-        lens = torch.Tensor(bsz,10).zero_()
-        for i in range(12):
-            for j in range(quotients[i]+1):
-                if j == quotients[i]:
-                    lens[i][j] = remainders[i]
-                else:
-                    lens[i][j] = length_of_chunk
-        lens_list = torch.chunk(lens, 10, dim=1)
-        lens_list = [torch.squeeze(t).long() for t in lens_list]
-
         context_outputs_word = []
-        for context_split, inp_len in zip(context_splits, lens_list):
-            context_out, _ = self.rnn(context_split, input_lengths=inp_len)
+        for context_split in context_splits:
+            context_out, _ = self.rnn(context_split)
             context_outputs_word.append(context_out)
 
-        # _, ques_hid = self.encoder_lev1(ques_output)
-        # context_input_lev2 = torch.cat(context_outputs_attn_word, dim=1)
-        # context_output_sent, sent_hidden = self.encoder_lev2(context_input_lev2, hidden_st=ques_hid)
-        # context_output_attn_sent = torch.unsqueeze(self.sent_attn(context_output_sent), dim=0).repeat(2,1,1)
-
-        # context_output,_ = self.rnn(context_output, input_lengths=context_lens)
         ques_output,_ = self.rnn(ques_output)
 
         context_outputs_word_attn = []
@@ -128,8 +104,6 @@ class HISPModel(nn.Module):
             context_out_word_attn = self.linear_1(context_out_word_attn)
             context_outputs_word_attn.append(context_out_word_attn)
 
-        # output = self.qc_att(context_output, ques_output, ques_mask)
-        # output = self.linear_1(output)
         context_output_word_attn = torch.cat(context_outputs_word_attn, dim=1)
 
         context_output_sent, _ = self.rnn_1(context_output_word_attn, input_lengths=context_lens)
@@ -140,9 +114,9 @@ class HISPModel(nn.Module):
         output_t = self.self_att(output_t, output_t, context_mask)
         output_t = self.linear_2(output_t)
 
-        output = output + output_t
+        output = context_output_sent_attn + output_t
 
-        sp_output,_ = self.rnn_sp(output, hidden_st=context_output_attn_sent, input_lengths=context_lens)
+        sp_output,_ = self.rnn_sp(output, input_lengths=context_lens)
 
         start_output = torch.matmul(start_mapping.permute(0, 2, 1).contiguous(), sp_output[:,:,self.hidden:])
         end_output = torch.matmul(end_mapping.permute(0, 2, 1).contiguous(), sp_output[:,:,:self.hidden])
@@ -154,14 +128,14 @@ class HISPModel(nn.Module):
         sp_output = torch.matmul(all_mapping, sp_output)
         output_start = torch.cat([output, sp_output], dim=-1)
 
-        output_start,_ = self.rnn_start(output_start, hidden_st=context_output_attn_sent, input_lengths=context_lens)
+        output_start,_ = self.rnn_start(output_start, input_lengths=context_lens)
         logit1 = self.linear_start(output_start).squeeze(2) - 1e30 * (1 - context_mask)
         output_end = torch.cat([output, output_start], dim=2)
-        output_end,_ = self.rnn_end(output_end, hidden_st=context_output_attn_sent, input_lengths=context_lens)
+        output_end,_ = self.rnn_end(output_end, input_lengths=context_lens)
         logit2 = self.linear_end(output_end).squeeze(2) - 1e30 * (1 - context_mask)
 
         output_type = torch.cat([output, output_end], dim=2)
-        output_type = torch.max(self.rnn_type(output_type, hidden_st=context_output_attn_sent, input_lengths=context_lens)[0], 1)[0]
+        output_type = torch.max(self.rnn_type(output_type, input_lengths=context_lens)[0], 1)[0]
         predict_type = self.linear_type(output_type)
 
         if not return_yp: return logit1, logit2, predict_type, predict_support

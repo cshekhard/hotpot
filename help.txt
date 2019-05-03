@@ -1,0 +1,8 @@
+- The preprocessing for these experiments is extremely heavy. I had to run it on a g3.8xlarge AWS instance which has 120 GB RAM and two GPUs.
+
+- Sometimes when the model does not seem to start training immediately, it is due to the GPUs going to a sleep mode. Simply do :
+sudo rmmod nvidia
+sudo modprobe nvidia
+
+- If you get an error saying a .so file is missing, simply do this :
+sudo ldconfig /usr/local/cuda-8.0/lib64

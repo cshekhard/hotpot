@@ -5,6 +5,8 @@ import os
 from torch import optim, nn
 from model import Model #, NoCharModel, NoSelfModel
 from sp_model import SPModel
+from hi_model import HIModel
+from hisp_model import HISPModel
 # from normal_model import NormalModel, NoSelfModel, NoCharModel, NoSentModel
 # from oracle_model import OracleModel, OracleModelV2
 # from util import get_record_parser, convert_tokens, evaluate, get_batch_dataset, get_dataset
@@ -72,10 +74,12 @@ def train(config):
     def build_dev_iterator():
         return DataIterator(dev_buckets, config.batch_size, config.para_limit, config.ques_limit, config.char_limit, False, config.sent_limit)
 
-    if config.sp_lambda > 0:
+    if config.sp_lambda > 0.5:
         model = SPModel(config, word_mat, char_mat)
-    else:
+    elif config.sp_lambda < 0.5:
         model = HIModel(config, word_mat, char_mat)
+    else:
+        model = HISPModel(config, word_mat, char_mat)
 
     logging('nparams {}'.format(sum([p.nelement() for p in model.parameters() if p.requires_grad])))
     ori_model = model.cuda()
@@ -110,7 +114,7 @@ def train(config):
             logit1, logit2, predict_type, predict_support = model(context_idxs, ques_idxs, context_char_idxs, ques_char_idxs, context_lens, start_mapping, end_mapping, all_mapping, return_yp=False)
             loss_1 = (nll_sum(predict_type, q_type) + nll_sum(logit1, y1) + nll_sum(logit2, y2)) / context_idxs.size(0)
             loss_2 = nll_average(predict_support.view(-1, 2), is_support.view(-1))
-            loss = loss_1 + config.sp_lambda * loss_2
+            loss = loss_1 + loss_2
 
             optimizer.zero_grad()
             loss.backward()
@@ -178,7 +182,7 @@ def evaluate_batch(data_source, model, max_batches, eval_file, config):
         all_mapping = Variable(data['all_mapping'], volatile=True)
 
         logit1, logit2, predict_type, predict_support, yp1, yp2 = model(context_idxs, ques_idxs, context_char_idxs, ques_char_idxs, context_lens, start_mapping, end_mapping, all_mapping, return_yp=True)
-        loss = (nll_sum(predict_type, q_type) + nll_sum(logit1, y1) + nll_sum(logit2, y2)) / context_idxs.size(0) + config.sp_lambda * nll_average(predict_support.view(-1, 2), is_support.view(-1))
+        loss = (nll_sum(predict_type, q_type) + nll_sum(logit1, y1) + nll_sum(logit2, y2)) / context_idxs.size(0) + nll_average(predict_support.view(-1, 2), is_support.view(-1))
         answer_dict_ = convert_tokens(eval_file, data['ids'], yp1.data.cpu().numpy().tolist(), yp2.data.cpu().numpy().tolist(), np.argmax(predict_type.data.cpu().numpy(), 1))
         answer_dict.update(answer_dict_)
 
@@ -261,10 +265,12 @@ def test(config):
         return DataIterator(dev_buckets, config.batch_size, para_limit,
             ques_limit, config.char_limit, False, config.sent_limit)
 
-    if config.sp_lambda > 0:
+    if config.sp_lambda > 0.5:
         model = SPModel(config, word_mat, char_mat)
+    elif config.sp_lambda < 0.5:
+        model = HIModel(config, word_mat, char_mat)
     else:
-        model = Model(config, word_mat, char_mat)
+        model = HISPModel(config, word_mat, char_mat)
     ori_model = model.cuda()
     ori_model.load_state_dict(torch.load(os.path.join(config.save, 'model.pt')))
     model = nn.DataParallel(ori_model)
